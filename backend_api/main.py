@@ -46,27 +46,28 @@ app = Flask(__name__)
 api = Api(app)
 
 parser = api.parser()
-parser.add_argument("text", type=str, help="Text", location="form")
+parser.add_argument("file_uri", type=str, help="Cloud Storage File URL", location="form")
+parser.add_argument("language_code", type=str, help="Language like en or de", location="form")
 
 
 @api.route("/api/text")
 class Text(Resource):
     def get(self):
         """
-        This GET request will return all the texts and sentiments that have been POSTed previously.
+        This GET request will return all the articles and sentiments that have been POSTed previously.
         """
         # Create a Cloud Datastore client.
         datastore_client = datastore.Client()
 
         # Get the datastore 'kind' which are 'Sentences'
-        query = datastore_client.query(kind="Sentences")
+        query = datastore_client.query(kind="Articles")
         text_entities = list(query.fetch())
 
         # Parse the data into a dictionary format
         result = {}
         for text_entity in text_entities:
             result[str(text_entity.id)] = {
-                "text": str(text_entity["text"]),
+                "file_uri": str(text_entity["file_uri"]),
                 "timestamp": str(text_entity["timestamp"]),
                 "sentiment": str(text_entity["sentiment"]),
             }
@@ -76,16 +77,16 @@ class Text(Resource):
     @api.expect(parser)
     def post(self):
         """
-        This POST request will accept a 'text', analyze the sentiment analysis of the first sentence, store
-        the result to datastore as a 'Sentence', and also return the result.
+        This POST request will accept a 'Google Cloud storage file uri' and language code, analyze the sentiment analysis of the file content, store
+        the result to datastore as a 'Articles', and also return the result.
         """
         datastore_client = datastore.Client()
 
         args = parser.parse_args()
-        text = args["text"]
-
+        file_uri = args["file_uri"]
+        language_code = args["language_code"]
         # Get the sentiment score of the first sentence of the analysis (that's the [0] part)
-        sentiment = analyze_text_sentiment(text)[0].get("sentiment score")
+        sentiment = analyze_sentiment_using_uri(file_uri, language_code).get("score")
 
         # Assign a label based on the score
         overall_sentiment = "unknown"
@@ -99,7 +100,7 @@ class Text(Resource):
         current_datetime = datetime.now()
 
         # The kind for the new entity. This is so all 'Sentences' can be queried.
-        kind = "Sentences"
+        kind = "Articles"
 
         # Create a key to store into datastore
         key = datastore_client.key(kind)
@@ -109,7 +110,7 @@ class Text(Resource):
 
         # Construct the new entity using the key. Set dictionary values for entity
         entity = datastore.Entity(key)
-        entity["text"] = text
+        entity["file_uri"] = file_uri
         entity["timestamp"] = current_datetime
         entity["sentiment"] = overall_sentiment
 
@@ -118,7 +119,7 @@ class Text(Resource):
 
         result = {}
         result[str(entity.key.id)] = {
-            "text": text,
+            "file_uri": file_uri,
             "timestamp": str(current_datetime),
             "sentiment": overall_sentiment,
         }
@@ -138,6 +139,57 @@ def server_error(e):
         500,
     )
 
+def analyze_sentiment_using_uri(gcs_content_uri, language_code = "en"):
+    """
+    Analyzing Sentiment in text file stored in Cloud Storage
+
+    Args:
+      gcs_content_uri Google Cloud Storage URI where the file content is located.
+      e.g. gs://[Your Bucket]/[Path to File]
+    """
+
+    client = language.LanguageServiceClient()
+
+    # gcs_content_uri = 'gs://cloud-samples-data/language/sentiment-positive.txt'
+
+    # Available types: PLAIN_TEXT, HTML
+    type_ = language.Document.Type.PLAIN_TEXT
+
+    # Optional. If not specified, the language is automatically detected.
+    # For list of supported languages:
+    # https://cloud.google.com/natural-language/docs/languages
+#     language = "en"
+    document = {"gcs_content_uri": gcs_content_uri, "type_": type_, "language": language_code}
+
+    # Available values: NONE, UTF8, UTF16, UTF32
+    encoding_type = language.EncodingType.UTF8
+
+    response = client.analyze_sentiment(request = {'document': document, 'encoding_type': encoding_type})
+
+    results = dict(
+        text=gcs_content_uri,
+        score=response.document_sentiment.score,
+        magnitude=response.document_sentiment.magnitude,
+    )
+
+    return results
+    # Get overall sentiment of the input document
+    # print(u"Document sentiment score: {}".format(response.document_sentiment.score))
+    # print(
+    #     u"Document sentiment magnitude: {}".format(
+    #         response.document_sentiment.magnitude
+    #     )
+    # )
+    # Get sentiment for all sentences in the document
+#     for sentence in response.sentences:
+#         print(u"Sentence text: {}".format(sentence.text.content))
+#         print(u"Sentence sentiment score: {}".format(sentence.sentiment.score))
+#         print(u"Sentence sentiment magnitude: {}".format(sentence.sentiment.magnitude))
+
+    # Get the language of the text, which will be the same as
+    # the language specified in the request or, if not specified,
+    # the automatically-detected language.
+    # print(u"Language of the text: {}".format(response.language))
 
 def analyze_text_sentiment(text):
     """
